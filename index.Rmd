@@ -1,0 +1,95 @@
+---
+title: "Weight Lifting Exercise Prediction"
+author: "Sebastien Viaene"
+date: "25 Mar 2016"
+output: html_document
+---
+
+## Introduction 
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement ??? a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+
+## Data exploration
+
+We first explore the data. It appears that there are quite some variables with NA measurements. We filter those out.
+
+```{r, message=FALSE, warning=FALSE}
+library(caret)
+traindata <- read.csv("pml-training.csv")
+validationdata  <- read.csv("pml-testing.csv")
+
+na_count <-sapply(traindata, function(y) sum(length(which(is.na(y)))))
+measurements <- which(na_count == 0)
+traindata = traindata[measurements]
+remain <- ncol(traindata)
+```
+
+With this simple step, we went from 160 variables to `r remain`. This is still to much for our classification analysis. First of all, we can omit the metadata. These are labels for each measurement who do not have any predictive value for the action of lifting weights. For example: user names, timestamps,... They are stored in the first 7 columns and can be removed for now. Second, there appear to be quite some variables for which only a few rows have an actual measurement. It turns out that they are formatted as factors in the data frame. The variables with a lot of measurements are formatted as numeric or integers. We should only keep these.
+
+```{r}
+clean_traindata <- traindata[-seq(1,7)]
+colclasses <- sapply(clean_traindata, class)
+filter <- colclasses == "numeric" | colclasses == "integer"
+# Exception for the 'classe' variable, which is a factor, but will be used as the outcome.
+filter[length(filter)] = TRUE
+clean_traindata <- clean_traindata[filter]
+remain <- ncol(clean_traindata)
+```
+After this filtering , the dataset contains `r remain` variables who can have predictive value. This dataset is partitioned into a training and test set. We put 70 percent of the rows into the training set.
+
+## Model training
+
+```{r}
+inTrain = createDataPartition(clean_traindata$classe, p = 0.7)[[1]]
+training = clean_traindata[inTrain,]
+testing = clean_traindata[-inTrain,]
+```
+
+Classification using random forests is usually very accurate and has the advantage that it is internally an average of many models. It is however computationally intensive to run a full random forest training on `r remain - 1` variables to predict the outcome. Therefore, we perform an initial random forest training, using only 100 trees. It will allow us to probe the importance of each variable. In practice, we keep the variables which are found to have 20 percent or more predictive value.
+
+``` {r, cache=TRUE, message=FALSE, warning=FALSE}
+
+modFit_rf100 <- train(classe ~. , data=training, method="rf", ntree=100)
+importance <- varImp(modFit_rf100)
+use <- importance$importance$Overall > 20
+keyVariables <- rownames(importance$importance)[use]
+```
+
+The key variables are: `r keyVariables`
+These are now used to perform a full random forest training, with 500 trees. The final model is used to estimate the accuracy on the training and test set.
+
+```{r, cache=TRUE, message=FALSE, warning=FALSE}
+training <- training[c(keyVariables,"classe")]
+testing  <- testing[c(keyVariables,"classe")]
+modFit_rf <- train(classe ~. , data=training, method="rf", ntree=500)
+
+pred_rf <- predict(modFit_rf, newdata = training)
+pred_rf_test <- predict(modFit_rf, newdata = testing)
+
+accuracy_rf = sum(pred_rf == training$classe) / length(pred_rf)
+accuracy_rf_test = sum(pred_rf_test == testing$classe) / length(pred_rf_test)
+```
+
+
+## Model verification and prediction
+
+We find that the accuracy on the training set is `r accuracy_rf*100`. The accuracy on the test set is `r accuracy_rf_test*100`. This brings the out of sample error rate at `r 100*(1-accuracy_rf_test)` percent. Let's have a look at the confusion table:
+
+```{r}
+table(pred_rf_test,testing$classe)
+```
+
+The table has very small off-diagonal elements, which indicates that our model misclassifies very few instances.
+Finally, we can predict the outcome on the validation set. For this set, we only have the variables, but not the outcome.
+The predictions of our model for the validation set is:
+
+```{r, message=FALSE, warning=FALSE}
+validation <- validationdata[keyVariables]
+pred_rf_validation <- data.frame(classe_predicted = predict(modFit_rf, newdata = validation))
+print(pred_rf_validation)
+```
+
+## Conclusions
+
+We have constructed a model to predict the way a weight lifting exercise is performed. A random forest simulation was performed to obtain the best method for classifying the different exercise techniques. We were able to scale down the data from 160 observables to only 8 predictive variables. The model performs well on the testing set, with `r remain*100` percent accuracy. We also provide predictions for the validation set.
